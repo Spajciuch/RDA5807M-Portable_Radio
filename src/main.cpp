@@ -1,70 +1,87 @@
 #include <Arduino.h>
 
-#include <oled-utils.h>
-#include <PicoGFX_SSD1322.h>
 #include <Adafruit_GFX.h>
+#include <PicoGFX_SSD1322.h>
+#include <oled-utils.h>
 
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 
-#include <RDA5807.h>
-#include <LTC2944_BMS.h>
 #include <EasyButton.h>
+#include <LTC2944_BMS.h>
+#include <RDA5807.h>
+
+#include <EEPROM.h>
 
 // --- PRZYCISKI ----
 
-const int UP = 14;
-const int DOWN = 13;
-const int BAND = 12;
-const int ST1 = 6;
-const int ST2 = 7;
-const int ST3 = 8;
-const int ST4 = 9;
-const int ST5 = 10;
-const int ST6 = 11;
-
-const int PS_PIN = 23;
-
-uint32_t debounce = 40;
-const int duration = 1000;
-
-bool pullup = true;
-bool invert = true;
-
-EasyButton upBtn(UP, debounce, pullup, invert);
-EasyButton dwnBtn(DOWN, debounce, pullup, invert);
-EasyButton bandBtn(BAND, debounce, pullup, invert);
-EasyButton st1Btn(ST1, debounce, pullup, invert);
-EasyButton st2Btn(ST2, debounce, pullup, invert);
-EasyButton st3Btn(ST3, debounce, pullup, invert);
-EasyButton st4Btn(ST4, debounce, pullup, invert);
-EasyButton st5Btn(ST5, debounce, pullup, invert);
-EasyButton st6Btn(ST6, debounce, pullup, invert);
-
-EasyButton *buttons[] = {
-    &upBtn, &dwnBtn, &bandBtn,
-    &st1Btn, &st2Btn, &st3Btn, &st4Btn, &st5Btn, &st6Btn};
+struct ButtonBinding {
+    EasyButton *btn;
+    void (*onShort)();
+    void (*onLong)();
+};
 
 void seek_interrupt();
-
+void setup_buttons();
 void station_button(int id, bool long_press);
 void seek_button(bool up_press, bool long_press);
 void band_button(bool long_press);
+
+const uint8_t UP = 14;
+const uint8_t DOWN = 13;
+const uint8_t BAND = 12;
+
+const uint8_t ST1 = 6;
+const uint8_t ST2 = 7;
+const uint8_t ST3 = 8;
+const uint8_t ST4 = 9;
+const uint8_t ST5 = 10;
+const uint8_t ST6 = 11;
+
+const uint8_t PS_PIN = 23;
+
+const uint8_t DEBOUNCE_MS = 40;
+const uint16_t LONG_PRESS_MS = 1000;
+
+const bool PULLUP = true;
+const bool INVERT = true;
+
+EasyButton upBtn(UP, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton dwnBtn(DOWN, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton bandBtn(BAND, DEBOUNCE_MS, PULLUP, INVERT);
+
+EasyButton st1Btn(ST1, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton st2Btn(ST2, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton st3Btn(ST3, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton st4Btn(ST4, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton st5Btn(ST5, DEBOUNCE_MS, PULLUP, INVERT);
+EasyButton st6Btn(ST6, DEBOUNCE_MS, PULLUP, INVERT);
+
+ButtonBinding bindings[] = { // lambda, bo easybutton oczekuje funkcji bez argumentów
+    {&upBtn, []() { seek_button(true, false); }, []() { seek_button(true, true); }}, 
+    {&dwnBtn, []() { seek_button(false, false); }, []() { seek_button(false, true); }},
+    {&bandBtn, []() { band_button(false); }, []() { band_button(true); }},
+    {&st1Btn, []() { station_button(1, false); }, []() { station_button(1, true); }},
+    {&st2Btn, []() { station_button(2, false); }, []() { station_button(2, true); }},
+    {&st3Btn, []() { station_button(3, false); }, []() { station_button(3, true); }},
+    {&st4Btn, []() { station_button(4, false); }, []() { station_button(4, true); }},
+    {&st5Btn, []() { station_button(5, false); }, []() { station_button(5, true); }},
+    {&st6Btn, []() { station_button(6, false); }, []() { station_button(6, true); }},
+};
 
 // --- ----
 
 // ---- ZAPIS DANYCH ----
 
-#define FLASH_TARGET_OFFSET (512 * 1024)
+void updateConfig();
 
-struct RadioData
-{
-    int frequencies[18] = {8770, 10330, 9890, 10010, 9760, 10710, 9440, 9760, 10210, 9560, 10010, 9330, 9480, 10270, 10210, 10690, 9870, 10480};
+struct RadioConfig {
+    uint16_t magic = 0xA55A;
+    uint16_t frequencies[18] = {8770, 10330, 9890, 10010, 9760, 10710, 9440, 9760, 10210, 9560, 10010, 9330, 9480, 10270, 10210, 10690, 9870, 10480}; // domyślne wartości
 };
 
-RadioData radioData;
-void saveMyData();
-void readBackMyData();
+RadioConfig default_radioConfig;
+RadioConfig radioConfig;
 
 // --- ----
 
@@ -122,11 +139,19 @@ boolean proper_rds(char *str);
 
 LTC2944_BMS bms;
 
-void setup()
-{
+void setup() {
     Serial.begin(115200);
 
-    readBackMyData();
+    EEPROM.begin(1024);
+    EEPROM.get(0, radioConfig);
+
+    if (radioConfig.magic != default_radioConfig.magic) {
+        EEPROM.put(0, default_radioConfig);
+        EEPROM.commit();
+
+        radioConfig = default_radioConfig;
+    }
+
     station_n = -1;
 
     // ---- INICJALIZACJA OLED ----
@@ -143,17 +168,7 @@ void setup()
 
     // ---- ----
 
-    // ---- INICJALIZACJA BMS ----
-
-    // bms.setShuntResistor(0.05);
-    // bms.setProfile(CHEM_LIION, 1);
-    // bms.begin();
-
-    // ---- ----
-
     // ---- INICJALIZACJA RDA5807M ----
-
-    // readBackMyData();
     rx.setDelayAfterCrystalOn(100);
 
     rx.setup();
@@ -180,83 +195,23 @@ void setup()
     pinMode(ST6, INPUT_PULLUP);
     pinMode(BAND, INPUT_PULLUP);
 
-    for (auto btn : buttons)
-    {
-        btn->begin();
-    }
-
-    upBtn.onPressed([]()
-                    { seek_button(true, false); });
-    upBtn.onPressedFor(duration, []()
-                       { seek_button(true, true); });
-
-    dwnBtn.onPressed([]()
-                     { seek_button(false, false); });
-    dwnBtn.onPressedFor(duration, []()
-                        { seek_button(false, true); });
-
-    bandBtn.onPressed([]()
-                      { band_button(false); });
-    bandBtn.onPressedFor(duration, []()
-                         { band_button(true); });
-
-    // ================= STACJE =========================
-
-    void (*stationShortFuncs[6])() = {
-        []()
-        { station_button(1, false); },
-        []()
-        { station_button(2, false); },
-        []()
-        { station_button(3, false); },
-        []()
-        { station_button(4, false); },
-        []()
-        { station_button(5, false); },
-        []()
-        { station_button(6, false); }};
-
-    void (*stationLongFuncs[6])() = {
-        []()
-        { station_button(1, true); },
-        []()
-        { station_button(2, true); },
-        []()
-        { station_button(3, true); },
-        []()
-        { station_button(4, true); },
-        []()
-        { station_button(5, true); },
-        []()
-        { station_button(6, true); }};
-
-    EasyButton *stationBtns[] = {&st1Btn, &st2Btn, &st3Btn, &st4Btn, &st5Btn, &st6Btn};
-
-    for (int i = 0; i < 6; i++)
-    {
-        stationBtns[i]->onPressed(stationShortFuncs[i]);
-        stationBtns[i]->onPressedFor(duration, stationLongFuncs[i]);
-    }
+    setup_buttons();
 
     // ---- ----
 
     show_frequency(rx.getFrequency());
     show_band(band_n, station_n);
 
-    attachInterrupt(digitalPinToInterrupt(UP), seek_interrupt, FALLING);
+    attachInterrupt(digitalPinToInterrupt(UP), seek_interrupt, FALLING); // PRZERWIJ SZUKANIE GDY WCIŚNIĘTO PRZYCISK STROJENIA
     attachInterrupt(digitalPinToInterrupt(DOWN), seek_interrupt, FALLING);
 }
 
-void loop()
-{
+void loop() {
     // ---- NORMALNY EKRAN ----
-    if (!power_screen)
-    {
+    if (!power_screen) {
         // ----  UPDATE RDSa ----
-        if ((millis() - rds_timestamp) > DELAY_RDS)
-        {
-            if (rx.getRdsReady())
-            {
+        if ((millis() - rds_timestamp) > DELAY_RDS) {
+            if (rx.getRdsReady()) {
                 refresh_RDS();
             }
 
@@ -267,12 +222,9 @@ void loop()
 
         // ---- ZMIEŃ JASNOŚĆ EKRANU ----
 
-        if ((millis() - interaction_timestamp) > DELAY_INTERACTION)
-        {
+        if ((millis() - interaction_timestamp) > DELAY_INTERACTION) {
             display.setContrast(0);
-        }
-        else
-        {
+        } else {
             display.setContrast(255);
         }
 
@@ -280,25 +232,20 @@ void loop()
 
         // ---- UPDATE STATYSTYK ----
 
-        if ((millis() - stats_timestamp) > DELAY_STATS)
-        {
+        if ((millis() - stats_timestamp) > DELAY_STATS) {
             bms.update();
             show_signal(rx.getRssi()); // update siły sygnału
             // Serial.println(digitalRead(13));
             stats_timestamp = millis();
         }
-    }
-    else
-    {
-        if ((millis() - stats_timestamp) > DELAY_STATS)
-        {
+    } else {
+        if ((millis() - stats_timestamp) > DELAY_STATS) {
             bms.update();
             show_power_screen(bms.getVoltage(), bms.getCurrent(), bms.getSoc());
             stats_timestamp = millis();
         }
 
-        if ((millis() - power_screen_timestamp) > POWER_SCREEN_DURATION)
-        {
+        if ((millis() - power_screen_timestamp) > POWER_SCREEN_DURATION) {
             power_screen = false;
 
             draw_ui();
@@ -310,61 +257,38 @@ void loop()
 
     // ---- ODCZYT PRZYCISKÓW ----
 
-    upBtn.read();
-    dwnBtn.read();
-
-    st1Btn.read();
-    st2Btn.read();
-    st3Btn.read();
-    st4Btn.read();
-    st5Btn.read();
-    st6Btn.read();
-    bandBtn.read();
+    for (auto &b : bindings)
+        b.btn->read();
 
     // ---- ----
 }
 
-void saveMyData()
-{
-    uint8_t *radioDataAsBytes = (uint8_t *)&radioData;
-    int radioDataSize = sizeof(radioData);
-
-    int writeSize = (radioDataSize / FLASH_PAGE_SIZE) + 1;
-    int sectorCount = ((writeSize * FLASH_PAGE_SIZE) / FLASH_SECTOR_SIZE) + 1;
-
-    uint32_t interrupts = save_and_disable_interrupts();
-    flash_range_erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE * sectorCount);
-    flash_range_program(FLASH_TARGET_OFFSET, radioDataAsBytes, FLASH_PAGE_SIZE * writeSize);
-    restore_interrupts(interrupts);
-}
-
-void readBackMyData()
-{
-    const uint8_t *flash_target_contents = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
-    memcpy(&radioData, flash_target_contents, sizeof(radioData));
+void updateConfig() {
+    EEPROM.put(0, radioConfig);
+    EEPROM.commit();
 }
 
 // ---- OBSŁUGA PRZYCISKÓW ----
 
-void seek_interrupt()
-{
-    rx.stopSeek();
-    // rx.getBand();
+void setup_buttons() {
+    for (auto &b : bindings) {
+        b.btn->begin();
+        b.btn->onPressed(b.onShort);
+        b.btn->onPressedFor(LONG_PRESS_MS, b.onLong);
+    }
 }
 
-void station_button(int id, bool long_press)
-{
+void seek_interrupt() { rx.stopSeek(); }
+
+void station_button(int id, bool long_press) {
     station_n = id;
 
-    if (!long_press)
-    {
+    if (!long_press) {
         rx.clearRdsBuffer();
-        rx.setFrequency(radioData.frequencies[(band_n * 6) + (station_n - 1)]);
-    }
-    else
-    {
-        radioData.frequencies[(band_n * 6) + (station_n - 1)] = rx.getFrequency();
-        saveMyData();
+        rx.setFrequency(radioConfig.frequencies[(band_n * 6) + (station_n - 1)]);
+    } else {
+        radioConfig.frequencies[(band_n * 6) + (station_n - 1)] = rx.getFrequency();
+        updateConfig();
     }
 
     show_frequency(rx.getFrequency());
@@ -375,8 +299,7 @@ void station_button(int id, bool long_press)
 
 // -------------------------------------------------
 
-void seek_button(bool up_press, bool long_press)
-{
+void seek_button(bool up_press, bool long_press) {
     station_n = -1;
 
     if (!long_press)
@@ -393,60 +316,43 @@ void seek_button(bool up_press, bool long_press)
 
 // -------------------------------------------------
 
-void band_button(bool long_press)
-{
-    //   if (!long_press)
-    //   {
-    //     station_n = -1;
+void band_button(bool long_press) {
+    if (!long_press) {
+        station_n = -1;
 
-    //     (band_n < 2) ? band_n++ : band_n = 0; // 0, 1, 2, 0, 1, 2 ... 0, 1, 2
-    //     show_frequency(rx.getFrequency());
-    //     show_band(band_n, station_n);
-    //   }
-    //   else
-    //   {
-    //     digitalWrite(PS_PIN, !digitalRead(PS_PIN));
-    //   }
+        (band_n < 2) ? band_n++ : band_n = 0; // 0, 1, 2, 0, 1, 2 ... 0, 1, 2
+        show_frequency(rx.getFrequency());
+        show_band(band_n, station_n);
+    } else {
+        digitalWrite(PS_PIN, !digitalRead(PS_PIN));
+    }
 
-    //   interaction_timestamp = millis();
+    interaction_timestamp = millis();
 }
 
 // ---- ----
 
 // ---- FUNKCJE POMOCNICZE ----
 
-void refresh_frequency()
-{
-    show_frequency(rx.getFrequency());
-}
+void refresh_frequency() { show_frequency(rx.getFrequency()); }
 
-void refresh_RDS()
-{
-    if (rx.getRdsReady())
-    {
-        Serial.println(rx.getRdsSync());
-        // Serial.println(rx.getRdsText2A());
-
-        if ((station_name = rx.getRdsText0A()) != NULL && proper_rds(station_name) && rx.getErrorBlockA() == 0)
-        {
+void refresh_RDS() {
+    if (rx.getRdsReady()) {
+        if ((station_name = rx.getRdsText0A()) != NULL && proper_rds(station_name) && rx.getErrorBlockA() == 0) {
             show_rds(station_name); // RDS Blok A - Nazwa stacji
         }
     }
 }
 
-boolean proper_rds(char *str)
-{
+boolean proper_rds(char *str) {
     uint8_t length = strlen(str);
 
-    if (length > 8)
-    {
+    if (length > 8) {
         return false;
     }
 
-    for (int i = 0; i < length; i++)
-    {
-        if (!isAlphaNumeric(str[i]) && !isAscii(str[i]))
-        {
+    for (int i = 0; i < length; i++) {
+        if (!isAlphaNumeric(str[i]) && !isAscii(str[i])) {
             return false;
         }
     }
