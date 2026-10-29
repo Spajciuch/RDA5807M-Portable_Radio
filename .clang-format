@@ -2,5 +2,5 @@ BasedOnStyle: LLVM
 IndentWidth: 4
 ColumnLimit: 240
 AllowShortLambdasOnASingleLine: All
-AllowShortFunctionsOnASingleLine: All
+AllowShortFunctionsOnASingleLine: None
 BinPackArguments: true

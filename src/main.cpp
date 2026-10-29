@@ -57,8 +57,9 @@ EasyButton st4Btn(ST4, DEBOUNCE_MS, PULLUP, INVERT);
 EasyButton st5Btn(ST5, DEBOUNCE_MS, PULLUP, INVERT);
 EasyButton st6Btn(ST6, DEBOUNCE_MS, PULLUP, INVERT);
 
-ButtonBinding bindings[] = { // lambda, bo easybutton oczekuje funkcji bez argumentów
-    {&upBtn, []() { seek_button(true, false); }, []() { seek_button(true, true); }}, 
+ButtonBinding bindings[] = {
+    // lambda, bo easybutton oczekuje funkcji bez argumentów
+    {&upBtn, []() { seek_button(true, false); }, []() { seek_button(true, true); }},
     {&dwnBtn, []() { seek_button(false, false); }, []() { seek_button(false, true); }},
     {&bandBtn, []() { band_button(false); }, []() { band_button(true); }},
     {&st1Btn, []() { station_button(1, false); }, []() { station_button(1, true); }},
@@ -278,7 +279,9 @@ void setup_buttons() {
     }
 }
 
-void seek_interrupt() { rx.stopSeek(); }
+void seek_interrupt() {
+    rx.stopSeek();
+}
 
 void station_button(int id, bool long_press) {
     station_n = id;
@@ -334,7 +337,9 @@ void band_button(bool long_press) {
 
 // ---- FUNKCJE POMOCNICZE ----
 
-void refresh_frequency() { show_frequency(rx.getFrequency()); }
+void refresh_frequency() {
+    show_frequency(rx.getFrequency());
+}
 
 void refresh_RDS() {
     if (rx.getRdsReady()) {
